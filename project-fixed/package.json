@@ -1,9 +1,0 @@
-{
-  "name": "engecampo-login",
-  "version": "1.0.0",
-  "description": "Sistema de login seguro para dashboards Engecampo",
-  "dependencies": {
-    "bcryptjs": "^2.4.3",
-    "jsonwebtoken": "^9.0.2"
-  }
-}
