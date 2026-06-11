@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>8WLA – Dashboard de Restrições</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:       #f4f6f9;
+  --surface:  #ffffff;
+  --border:   #e4e8ef;
+  --text:     #1a1f36;
+  --muted:    #6b7280;
+  --accent:   #d4292e;
+
+  /* status colors — mesmas do Monday */
+  --c-concluido-prazo:   #00c875;
+  --c-concluido-atraso:  #0073ea;
+  --c-em-andamento:      #fdab3d;
+  --c-atrasado:          #e2445c;
+  --c-nao-iniciado:      #c4c4c4;
+  --c-cancelado:         #808080;
+  --c-aguarda:           #ffcb00;
+  --c-revisar:           #9d50dd;
+}
+
+body {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+/* ── header ── */
+.dash-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky; top: 0; z-index: 10;
+}
+.dash-title { font-size: 16px; font-weight: 700; letter-spacing: .3px; }
+.dash-updated { font-size: 11px; color: var(--muted); }
+.btn-refresh {
+  background: var(--accent); color: #fff; border: none; border-radius: 6px;
+  padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
+  display: flex; align-items: center; gap: 6px; transition: opacity .2s;
+}
+.btn-refresh:hover { opacity: .85; }
+.btn-refresh.loading { opacity: .6; pointer-events: none; }
+.spin { display: inline-block; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── grid ── */
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: auto auto auto;
+  gap: 16px;
+  padding: 20px 24px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+/* layout igual ao Monday */
+.card-irr       { grid-column: 1; grid-row: 1; }
+.card-kpi-sem   { grid-column: 2; grid-row: 1; }
+.card-pizza-st  { grid-column: 3; grid-row: 1; }
+.card-kpi-tot   { grid-column: 2; grid-row: 1; margin-top: 0; align-self: end; }
+.card-bar-resp  { grid-column: 1 / 3; grid-row: 2; }
+.card-bar-mes   { grid-column: 3; grid-row: 2; }
+
+/* stack KPIs na coluna 2 */
+.col2 { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; gap: 16px; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.06);
+}
+.card-header {
+  font-size: 12px; font-weight: 600; color: var(--muted);
+  letter-spacing: .5px; text-transform: uppercase;
+  margin-bottom: 12px; display: flex; justify-content: space-between;
+}
+.card-expand { cursor: pointer; color: var(--border); font-size: 16px; }
+
+/* KPI */
+.kpi-value { font-size: 48px; font-weight: 700; color: var(--text); line-height: 1; }
+.kpi-label { font-size: 13px; color: var(--muted); margin-top: 6px; }
+.kpi-card  { display: flex; flex-direction: column; justify-content: center; min-height: 120px; }
+
+/* chart containers */
+.chart-wrap { position: relative; width: 100%; }
+.chart-wrap.pie-wrap { max-width: 320px; margin: 0 auto; }
+
+/* legend */
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 12px; font-size: 11px; }
+.legend-item { display: flex; align-items: center; gap: 5px; }
+.legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+/* loading / error overlay */
+.overlay {
+  position: fixed; inset: 0; background: rgba(244,246,249,.85);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; z-index: 100; font-size: 14px; color: var(--muted);
+}
+.overlay.hidden { display: none; }
+.loader {
+  width: 36px; height: 36px; border: 3px solid var(--border);
+  border-top-color: var(--accent); border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+
+/* bar chart large */
+.card-bar-resp, .card-bar-mes { grid-row: 2; }
+.card-bar-resp { grid-column: 1 / 3; }
+.card-bar-mes  { grid-column: 3; }
+
+@media (max-width: 900px) {
+  .grid { grid-template-columns: 1fr 1fr; padding: 12px; }
+  .card-bar-resp { grid-column: 1 / 3; }
+  .card-bar-mes  { grid-column: 1 / 3; }
+}
+@media (max-width: 600px) {
+  .grid { grid-template-columns: 1fr; }
+  .card-bar-resp, .card-bar-mes, .col2 { grid-column: 1; }
+}
+</style>
+</head>
+<body>
+
+<div class="overlay" id="overlay">
+  <div class="loader"></div>
+  <span id="overlay-msg">Carregando dados...</span>
+</div>
+
+<header class="dash-header">
+  <div class="dash-title">8WLA – Restrições</div>
+  <div style="display:flex;align-items:center;gap:16px">
+    <span class="dash-updated" id="updated-at"></span>
+    <button class="btn-refresh" id="btn-refresh" onclick="loadData()">
+      <span id="refresh-icon">↻</span> Atualizar
+    </button>
+  </div>
+</header>
+
+<div class="grid">
+
+  <!-- Pizza IRR Semana Anterior -->
+  <div class="card card-irr">
+    <div class="card-header">IRR – Semana Anterior</div>
+    <div class="chart-wrap pie-wrap">
+      <canvas id="chart-irr"></canvas>
+    </div>
+    <div class="legend" id="legend-irr"></div>
+  </div>
+
+  <!-- Col 2: 2 KPIs -->
+  <div class="col2">
+    <div class="card kpi-card">
+      <div class="card-header">Qtd. Restrições Semana Anterior</div>
+      <div class="kpi-value" id="kpi-semana">–</div>
+      <div class="kpi-label">restrições</div>
+    </div>
+    <div class="card kpi-card">
+      <div class="card-header">Qtd. Restrições Totais</div>
+      <div class="kpi-value" id="kpi-total">–</div>
+      <div class="kpi-label">restrições</div>
+    </div>
+  </div>
+
+  <!-- Pizza % por Status -->
+  <div class="card card-pizza-st">
+    <div class="card-header">% Restrições por Status</div>
+    <div class="chart-wrap pie-wrap">
+      <canvas id="chart-status"></canvas>
+    </div>
+    <div class="legend" id="legend-status"></div>
+  </div>
+
+  <!-- Barra por Responsável -->
+  <div class="card card-bar-resp">
+    <div class="card-header">Status Restrições por Responsável</div>
+    <div class="chart-wrap" style="height:260px">
+      <canvas id="chart-resp"></canvas>
+    </div>
+    <div class="legend" id="legend-bar"></div>
+  </div>
+
+  <!-- Barra por Mês -->
+  <div class="card card-bar-mes">
+    <div class="card-header">Status Restrições por Mês (Data Plan.)</div>
+    <div class="chart-wrap" style="height:260px">
+      <canvas id="chart-mes"></canvas>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ── Cores por status ──────────────────────────────────────────
+const STATUS_COLOR = {
+  'Concluído no prazo':  '#00c875',
+  'Concluído em atraso': '#0073ea',
+  'Em andamento':        '#fdab3d',
+  'Atrasado':            '#e2445c',
+  'Não Iniciado':        '#c4c4c4',
+  'Cancelado':           '#808080',
+  'Aguarda predecessora':'#ffcb00',
+  'REVISAR':             '#9d50dd',
+};
+const STATUS_ORDER = Object.keys(STATUS_COLOR);
+
+// ── IDs de colunas (ajuste conforme retorno real da API) ──────
+// Esses IDs serão confirmados na primeira chamada real
+const COL = {
+  status:       'status',        // coluna Status do subitem
+  responsavel:  'person',        // coluna Resp.
+  data_plan:    'date4',         // coluna Data Plan. (ajustar)
+};
+
+// ── Token JWT do usuário (passado pelo pai via postMessage ou URL param) ─
+let jwtToken = null;
+
+// Recebe token do parent (index.html)
+window.addEventListener('message', e => {
+  if (e.data?.type === 'jwt') { jwtToken = e.data.token; loadData(); }
+});
+
+// Também aceita via parâmetro (fallback para desenvolvimento)
+const params = new URLSearchParams(location.search);
+if (params.get('dev') === '1') {
+  // Modo dev: usa dados mock
+  renderAll(getMockData());
+}
+
+// ── Carrega dados reais ───────────────────────────────────────
+async function loadData() {
+  showOverlay('Carregando dados...');
+  setBtnLoading(true);
+
+  // Pega o board ID do parâmetro da URL (passado pelo index.html)
+  const boardParam = new URLSearchParams(location.search).get('board') || 'avfs';
+
+  try {
+    const res = await fetch(`/api/monday-board?board=${boardParam}`, {
+      headers: { 'Authorization': 'Bearer ' + jwtToken }
+    });
+
+    if (res.status === 401) {
+      showOverlay('Sessão expirada. Faça login novamente.');
+      return;
+    }
+
+    const json = await res.json();
+
+    if (!json.ok) {
+      console.warn('[8WLA] API retornou erro:', json.mensagem);
+      // Usa mock com aviso visual
+      renderAll(getMockData());
+      hideOverlay();
+      document.getElementById('updated-at').textContent = '⚠ Dados de exemplo — ' + (json.mensagem || 'configure MONDAY_API_TOKEN');
+      return;
+    }
+
+    const processed = processData(json.data);
+    renderAll(processed);
+    hideOverlay();
+    document.getElementById('updated-at').textContent =
+      'Atualizado às ' + new Date().toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'});
+
+  } catch(e) {
+    console.error('[8WLA] Erro:', e);
+    // Fallback para mock em vez de travar
+    renderAll(getMockData());
+    hideOverlay();
+    document.getElementById('updated-at').textContent = '⚠ Dados de exemplo — erro de conexão';
+  } finally {
+    setBtnLoading(false);
+  }
+}
+
+// ── Processa resposta da API Monday ──────────────────────────
+function processData(apiData) {
+  const board = apiData?.data?.boards?.[0];
+  if (!board) return getMockData();
+
+  const allSubitems = [];
+  for (const item of board.items_page.items) {
+    for (const sub of (item.subitems || [])) {
+      const cols = {};
+      for (const cv of sub.column_values) {
+        cols[cv.id] = cv.text || '';
+      }
+      allSubitems.push({
+        name:         sub.name,
+        status:       cols[COL.status]      || 'Não Iniciado',
+        responsavel:  cols[COL.responsavel] || 'Sem responsável',
+        data_plan:    cols[COL.data_plan]   || '',
+      });
+    }
+  }
+
+  return buildMetrics(allSubitems);
+}
+
+function buildMetrics(subitems) {
+  const now = new Date();
+  const semanaAtras = new Date(now - 7 * 24 * 3600 * 1000);
+
+  // KPIs
+  const total = subitems.length;
+  const semana = subitems.filter(s => {
+    if (!s.data_plan) return false;
+    const d = new Date(s.data_plan);
+    return d >= semanaAtras && d <= now;
+  }).length;
+
+  // IRR semana anterior: concluído vs não concluído na semana
+  const semanaItens = subitems.filter(s => {
+    if (!s.data_plan) return false;
+    const d = new Date(s.data_plan);
+    return d >= semanaAtras && d <= now;
+  });
+  const irrConcluido    = semanaItens.filter(s => s.status.startsWith('Concluído')).length;
+  const irrNaoConcluido = semanaItens.length - irrConcluido;
+
+  // Pizza por status
+  const byStatus = {};
+  for (const s of subitems) {
+    byStatus[s.status] = (byStatus[s.status] || 0) + 1;
+  }
+
+  // Barras por responsável
+  const byResp = {};
+  for (const s of subitems) {
+    const r = s.responsavel || 'Sem resp.';
+    if (!byResp[r]) byResp[r] = {};
+    byResp[r][s.status] = (byResp[r][s.status] || 0) + 1;
+  }
+
+  // Barras por mês
+  const byMes = {};
+  for (const s of subitems) {
+    if (!s.data_plan) continue;
+    const d = new Date(s.data_plan);
+    if (isNaN(d)) continue;
+    const key = d.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+    if (!byMes[key]) byMes[key] = {};
+    byMes[key][s.status] = (byMes[key][s.status] || 0) + 1;
+  }
+
+  return { total, semana, irrConcluido, irrNaoConcluido, byStatus, byResp, byMes };
+}
+
+// ── Mock data (idêntico ao print) ────────────────────────────
+function getMockData() {
+  return {
+    total: 276,
+    semana: 26,
+    irrConcluido: 8,
+    irrNaoConcluido: 18,
+    byStatus: {
+      'Concluído no prazo':   44,
+      'Concluído em atraso':  69,
+      'Em andamento':         26,
+      'Atrasado':              6,
+      'Não Iniciado':        102,
+      'Cancelado':             3,
+      'Aguarda predecessora': 25,
+      'REVISAR':               1,
+    },
+    byResp: {
+      'Julio Cesar Azevedo': { 'Não Iniciado':45,'Concluído em atraso':3,'Atrasado':3,'Em andamento':3,'Concluído no prazo':5 },
+      'Luciano Pires':       { 'Não Iniciado':18,'Concluído em atraso':7,'Atrasado':4,'Em andamento':4,'Concluído no prazo':7 },
+      'Leonardo Oliveira':   { 'Não Iniciado':16,'Concluído em atraso':10,'Atrasado':4,'Em andamento':4,'Concluído no prazo':4 },
+      'Mateus':              { 'Não Iniciado':17,'Concluído em atraso':4,'Atrasado':3,'Em andamento':7,'Concluído no prazo':2 },
+      'JOSE ROBERTO':        { 'Não Iniciado':19,'Concluído em atraso':7,'Atrasado':0,'Em andamento':4,'Concluído no prazo':0 },
+      'Wagner Germano':      { 'Não Iniciado':4,'Concluído em atraso':4,'Atrasado':6,'Em andamento':3,'Concluído no prazo':8 },
+      'Ronaldo Ferreira':    { 'Não Iniciado':3,'Concluído em atraso':3,'Em andamento':3,'Concluído no prazo':2 },
+      'MATEUS NASCIMES':     { 'Não Iniciado':3,'Concluído em atraso':2,'Atrasado':2,'Em andamento':1,'Concluído no prazo':3 },
+    },
+    byMes: {
+      'January 2026':   { 'Não Iniciado':10,'Concluído em atraso':10 },
+      'February 2026':  { 'Não Iniciado':10,'Concluído em atraso':12 },
+      'March 2026':     { 'Não Iniciado':9,'Concluído em atraso':18,'Atrasado':1 },
+      'April 2026':     { 'Não Iniciado':7,'Concluído em atraso':31,'Atrasado':4,'Em andamento':3,'Concluído no prazo':1 },
+      'May 2026':       { 'Não Iniciado':17,'Concluído em atraso':45,'Atrasado':4,'Em andamento':8,'Concluído no prazo':1 },
+      'June 2026':      { 'Não Iniciado':4,'Concluído em atraso':55,'Atrasado':7,'Em andamento':20,'Concluído no prazo':11,'Aguarda predecessora':2 },
+      'July 2026':      { 'Não Iniciado':37,'Concluído em atraso':78,'Atrasado':3,'Em andamento':18,'Concluído no prazo':6,'Aguarda predecessora':3 },
+      'August 2026':    { 'Não Iniciado':13,'Concluído em atraso':8,'Atrasado':1 },
+      'September 2026': { 'Não Iniciado':3 },
+      'October 2026':   { 'Não Iniciado':2 },
+    },
+  };
+}
+
+// ── Render ────────────────────────────────────────────────────
+let charts = {};
+
+function destroyChart(id) {
+  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+}
+
+function renderAll(d) {
+  // KPIs
+  document.getElementById('kpi-semana').textContent = d.semana;
+  document.getElementById('kpi-total').textContent  = d.total;
+
+  // IRR pizza
+  destroyChart('irr');
+  const irrLabels = ['Concluído', 'Não Concluído'];
+  const irrData   = [d.irrConcluido, d.irrNaoConcluido];
+  const irrColors = ['#00c875','#c4c4c4'];
+  charts['irr'] = new Chart(document.getElementById('chart-irr'), {
+    type: 'pie',
+    data: { labels: irrLabels, datasets: [{ data: irrData, backgroundColor: irrColors, borderWidth: 2, borderColor: '#fff' }] },
+    options: pieOptions(irrLabels, irrData, irrColors),
+  });
+  renderLegend('legend-irr', irrLabels, irrData, irrColors, d.irrConcluido + d.irrNaoConcluido);
+
+  // Status pizza
+  destroyChart('status');
+  const stLabels = STATUS_ORDER.filter(s => d.byStatus[s]);
+  const stData   = stLabels.map(s => d.byStatus[s] || 0);
+  const stColors = stLabels.map(s => STATUS_COLOR[s]);
+  const stTotal  = stData.reduce((a,b) => a+b, 0);
+  charts['status'] = new Chart(document.getElementById('chart-status'), {
+    type: 'pie',
+    data: { labels: stLabels, datasets: [{ data: stData, backgroundColor: stColors, borderWidth: 2, borderColor: '#fff' }] },
+    options: pieOptions(stLabels, stData, stColors),
+  });
+  renderLegend('legend-status', stLabels, stData, stColors, stTotal);
+
+  // Barras por responsável
+  destroyChart('resp');
+  const respLabels = Object.keys(d.byResp);
+  const respDatasets = STATUS_ORDER.filter(s =>
+    respLabels.some(r => d.byResp[r][s])
+  ).map(s => ({
+    label: s,
+    data: respLabels.map(r => d.byResp[r][s] || 0),
+    backgroundColor: STATUS_COLOR[s],
+    stack: 'stack',
+  }));
+  charts['resp'] = new Chart(document.getElementById('chart-resp'), {
+    type: 'bar',
+    data: { labels: respLabels, datasets: respDatasets },
+    options: barOptions(),
+  });
+  // legend compartilhada
+  renderBarLegend('legend-bar', respDatasets);
+
+  // Barras por mês
+  destroyChart('mes');
+  const mesLabels = Object.keys(d.byMes);
+  const mesDatasets = STATUS_ORDER.filter(s =>
+    mesLabels.some(m => d.byMes[m][s])
+  ).map(s => ({
+    label: s,
+    data: mesLabels.map(m => d.byMes[m][s] || 0),
+    backgroundColor: STATUS_COLOR[s],
+    stack: 'stack',
+  }));
+  charts['mes'] = new Chart(document.getElementById('chart-mes'), {
+    type: 'bar',
+    data: { labels: mesLabels.map(m => m.replace(' 20', ' \'').replace('January','Jan').replace('February','Feb').replace('March','Mar').replace('April','Apr').replace('May','May').replace('June','Jun').replace('July','Jul').replace('August','Aug').replace('September','Sep').replace('October','Oct').replace('November','Nov').replace('December','Dec')), datasets: mesDatasets },
+    options: barOptions(true),
+  });
+}
+
+function pieOptions(labels, data, colors) {
+  const total = data.reduce((a,b) => a+b, 0);
+  return {
+    responsive: true,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: ctx => ` ${ctx.label}: ${((ctx.parsed / total) * 100).toFixed(1)}%`
+        }
+      }
+    }
+  };
+}
+
+function barOptions(rotateLabels = false) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false }, tooltip: { mode: 'index' } },
+    scales: {
+      x: {
+        stacked: true,
+        ticks: {
+          font: { size: 10 },
+          maxRotation: rotateLabels ? 45 : 60,
+          minRotation: rotateLabels ? 45 : 45,
+        },
+        grid: { display: false },
+      },
+      y: {
+        stacked: true,
+        ticks: { font: { size: 10 } },
+        grid: { color: '#f0f0f0' },
+      }
+    }
+  };
+}
+
+function renderLegend(containerId, labels, data, colors, total) {
+  const el = document.getElementById(containerId);
+  el.innerHTML = labels.map((l, i) =>
+    `<div class="legend-item">
+      <div class="legend-dot" style="background:${colors[i]}"></div>
+      <span>${l}: ${((data[i]/total)*100).toFixed(1)}%</span>
+    </div>`
+  ).join('');
+}
+
+function renderBarLegend(containerId, datasets) {
+  const el = document.getElementById(containerId);
+  el.innerHTML = datasets.map(ds =>
+    `<div class="legend-item">
+      <div class="legend-dot" style="background:${ds.backgroundColor}"></div>
+      <span>${ds.label}</span>
+    </div>`
+  ).join('');
+}
+
+// ── UI helpers ────────────────────────────────────────────────
+function showOverlay(msg) {
+  document.getElementById('overlay').classList.remove('hidden');
+  document.getElementById('overlay-msg').textContent = msg;
+}
+function hideOverlay() {
+  document.getElementById('overlay').classList.add('hidden');
+}
+function setBtnLoading(v) {
+  const btn = document.getElementById('btn-refresh');
+  const ico = document.getElementById('refresh-icon');
+  btn.classList.toggle('loading', v);
+  ico.className = v ? 'spin' : '';
+  ico.textContent = '↻';
+}
+
+// ── Init ─────────────────────────────────────────────────────
+// Se não receber token por postMessage em 500ms, usa mock
+setTimeout(() => {
+  if (!jwtToken) renderAll(getMockData());
+}, 500);
+hideOverlay();
+</script>
+</body>
+</html>
